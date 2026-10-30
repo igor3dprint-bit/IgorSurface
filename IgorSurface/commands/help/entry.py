@@ -1,14 +1,14 @@
-"""Ajuda: opens the offline user guide (resources/help/index.html) in the default browser."""
-import os, webbrowser
+"""Ajuda: opens the project page on GitHub (README = user guide)."""
+import webbrowser
 from ...lib import ui
 
 CMD_ID = 'IgorSurface_help'
 LINKS = (('IgorSurface_instagram', 'Instagram @igor3dprint', 'Abre o Instagram @igor3dprint.', 'https://www.instagram.com/igor3dprint/'),
          ('IgorSurface_hotmart', 'Curso (Hotmart)', 'Abre o curso do Igor no Hotmart.', 'https://hotmart.com/pt-br/club/igor3dprint'))
-PAGE = os.path.join(ui.RES, 'help', 'index.html')
+GUIDE = 'https://github.com/igor3dprint-bit/IgorSurface#readme'
 
 def start():
-    ui.add_command(CMD_ID, 'Ajuda', 'Guia do IgorSurface: o que cada ferramenta faz, passo a passo e o que fazer se der errado.', created)
+    ui.add_command(CMD_ID, 'Ajuda', 'Abre a página do IgorSurface no GitHub: o que cada ferramenta faz, instalação e novidades.', created)
     for cid, name, tip, url in LINKS:
         ui.add_command(cid, name, tip, lambda a, url=url: ui.on(('command', a.command.execute), lambda e: webbrowser.open(url)))
 
@@ -19,10 +19,4 @@ def stop():
 
 def created(args):
     # no inputs: runs at once
-    ui.on(('command', args.command.execute), lambda a: open_page())
-
-def open_page():
-    if not os.path.isfile(PAGE):
-        ui.ui.messageBox('Guia não encontrado em:\n' + PAGE, 'IgorSurface')
-        return
-    webbrowser.open('file:///' + PAGE.replace(os.sep, '/'))
+    ui.on(('command', args.command.execute), lambda a: webbrowser.open(GUIDE))

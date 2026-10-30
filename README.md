@@ -1,6 +1,6 @@
 # IgorSurface
 
-Plugin gratuito e open source para **Autodesk Fusion** que transforma scans 3D e malhas STL em geometria CAD editável: esboços, superfícies e sólidos.
+Plugin gratuito e open source para **Autodesk Fusion** que transforma scans 3D e malhas STL em geometria CAD editável: esboços e superfícies.
 
 Feito por [@igor3dprint](https://www.instagram.com/igor3dprint/) · [Curso de modelagem e impressão 3D](https://hotmart.com/pt-br/club/igor3dprint)
 
@@ -15,10 +15,7 @@ Feito por [@igor3dprint](https://www.instagram.com/igor3dprint/) · [Curso de mo
 | **CriarAuto** | Clica numa face da malha: ela é reconhecida (plano, cilindro, esfera, cone) e vira esboço, com furos |
 | **Ajustar Superfície** | Ajusta plano/cilindro/esfera/cone à região clicada e cria a superfície |
 | **Esboço por Seção** | Corta a malha e gera o perfil em linhas e arcos limpos |
-| **Estrutura Generativa** | Clique na fixação e no ponto da força: gera uma treliça otimizada com barras dimensionadas pela força |
-| **Forma Livre** | Manda as faces do grupo para o ambiente Form (T-Spline) |
-| **Costurar** | Une as superfícies do grupo IgorSurface num sólido |
-| **Mapa de Desvio** | Pinta a malha pela distância até o CAD |
+| **Mapa de Desvio** | Pinta a malha pela distância até o CAD (só enquanto a janela está aberta) |
 | **IgorOrganizer** | Um clique: cada corpo vira componente com o próprio nome |
 | **IgorSave** | Salva .3mf + .f3d juntos (opção de salvar ao fechar) |
 
@@ -32,12 +29,12 @@ Tudo que o plugin cria vai num componente **IgorSurface**; ele nunca altera seus
    - Windows: `%APPDATA%\Autodesk\Autodesk Fusion 360\API\AddIns\`
    - Mac: `~/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns/`
 3. No Fusion: **Utilities > Add-Ins** (Shift+S) > aba **Add-Ins** > **IgorSurface** > **Run** (marque *Run on Startup*).
-4. O painel **IGOR SURFACE** aparece nas abas Solid, Surface e Mesh. O botão **Ajuda** abre o guia.
+4. O painel **IGOR SURFACE** aparece nas abas Solid, Surface e Mesh. O botão **Ajuda** abre esta página.
 
 ## Desenvolvimento
 
 - Python puro (sem numpy), roda dentro do Fusion. Unidades internas em cm.
-- `IgorSurface/lib/` = matemática testável sem Fusion (ajuste, regiões, curvas, treliça). `IgorSurface/commands/<ferramenta>/entry.py` = um comando cada.
+- `IgorSurface/lib/` = matemática testável sem Fusion (ajuste, regiões, curvas). `IgorSurface/commands/<ferramenta>/entry.py` = um comando cada.
 - Testes: `for t in tests/test_*.py; do python $t; done` (rodam no CI a cada push).
 - Pull requests e issues são bem-vindos.
 
