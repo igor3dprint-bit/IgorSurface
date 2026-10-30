@@ -1,0 +1,13 @@
+{
+  "autodeskProduct": "Fusion",
+  "type": "addin",
+  "id": "8f3c2a1e-6d4b-4f0a-9b7e-3c5d1a2e4f60",
+  "author": "Igor",
+  "description": {
+    "": "IgorSurface: clique na malha e gere superfícies CAD editáveis (plano, cilindro, esfera, cone)."
+  },
+  "version": "1.0.0",
+  "runOnStartup": true,
+  "supportedOS": "windows|mac",
+  "editEnabled": true
+}

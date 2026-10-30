@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 32 32" stroke-linecap="round" stroke-linejoin="round">
+<defs><linearGradient id="deviation" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#2F8FD8"/><stop offset="0.5" stop-color="#D6DFE6"/><stop offset="1" stop-color="#F39C12"/></linearGradient></defs>
+<path d="M4 10L20 5L28 9L26 25L11 29L4 24Z" fill="#D6DFE6" stroke="#26384A" stroke-width="1.9"/>
+<path d="M4 10L20 5L28 9L13 15Z" fill="#91A1AF" stroke="#26384A" stroke-width="1.9"/>
+<path d="M4 10L13 15L11 29L4 24Z" fill="#2F8FD8" stroke="#26384A" stroke-width="1.9"/>
+<path d="M13 15L28 9L26 25L11 29Z" fill="url(#deviation)" stroke="#26384A" stroke-width="1.9"/>
+<polyline points="4,29 8,30" fill="none" stroke="#2F8FD8" stroke-width="2"/>
+<polyline points="25,29 29,28" fill="none" stroke="#F39C12" stroke-width="2"/>
+</svg>
