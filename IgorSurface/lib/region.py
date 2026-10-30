@@ -132,16 +132,128 @@ def snap_point(p, tol, verts, segs):
     best = min(((norm(sub(q, p)), q) for q in (closest_on_seg(p, a, b) for a, b in segs)), default=None, key=lambda t: t[0])
     return best[1] if best and best[0] <= tol else None
 
+def surface_path(mesh, p0, p1, tol=0.01):  # 0.1 mm: keeps shape, drops scan noise wiggles
+    """Path on the mesh from p0 to p1: walk the section by the plane through p0, p1 and their average normal,
+    triangle to triangle, both ways round; the shorter walk that arrives wins. None if the walk can't connect."""
+    t0, t1 = mesh.nearest_tri(p0), mesh.nearest_tri(p1)
+    if t0 == t1:
+        return [p0, p1]
+    d = sub(p1, p0)
+    nav = tuple(a + b for a, b in zip(mesh.nrm[t0], mesh.nrm[t1]))
+    if norm(nav) < 1e-6:  # opposite faces of a thin wall
+        nav = mesh.nrm[t0]
+    pn = cross(d, nav)
+    if norm(pn) < 1e-9 * (norm(d) or 1):
+        return None
+    pn = unit(pn)
+    side = lambda i: dot(sub(mesh.v[i], p0), pn)
+    budget = 4 * norm(d) + 10 * tol
+    best = None
+    for first in (0, 1):
+        crossed = [e for e in ((a, b) for a, b in (mesh.t[t0][:2], mesh.t[t0][1:], (mesh.t[t0][2], mesh.t[t0][0])))
+                   if (side(e[0]) >= 0) != (side(e[1]) >= 0)]
+        if len(crossed) != 2:
+            return None
+        t, e, path, length = t0, crossed[first], [p0], 0.0
+        while True:
+            a, b = e
+            sa, sb = side(a), side(b)
+            q = tuple(mesh.v[a][k] + (mesh.v[b][k] - mesh.v[a][k]) * sa / (sa - sb) for k in range(3))
+            length += norm(sub(q, path[-1])); path.append(q)
+            if length > budget:
+                break
+            nxt = [x for x in mesh.edges[(min(a, b), max(a, b))] if x != t]
+            if len(nxt) != 1:  # open border or non-manifold: this way is blocked
+                break
+            t = nxt[0]
+            if t == t1:
+                path.append(p1); length += norm(sub(p1, q))
+                if best is None or length < best[0]:
+                    best = (length, path)
+                break
+            v = mesh.t[t]
+            e = next(((x, y) for x, y in ((v[0], v[1]), (v[1], v[2]), (v[2], v[0]))
+                      if {x, y} != {a, b} and (side(x) >= 0) != (side(y) >= 0)), None)
+            if e is None:
+                break
+    return best[1] if best else None
+
+def simplify(pts, tol):
+    """Douglas-Peucker: drop points that sit within tol of the chord, so splines stay light on dense scans."""
+    if len(pts) < 3:
+        return pts
+    i, dmax = max(((k, norm(sub(pts[k], closest_on_seg(pts[k], pts[0], pts[-1])))) for k in range(1, len(pts)-1)),
+                  key=lambda x: x[1])
+    if dmax <= tol:
+        return [pts[0], pts[-1]]
+    return simplify(pts[:i+1], tol)[:-1] + simplify(pts[i:], tol)
+
+def resample(pts, n):
+    """n+1 points evenly spaced by arc length along the polyline."""
+    acc = [0.0]
+    for i in range(len(pts)-1):
+        acc.append(acc[-1] + norm(sub(pts[i+1], pts[i])))
+    out, k = [], 0
+    for j in range(n+1):
+        s = acc[-1] * j / n
+        while k < len(pts)-2 and acc[k+1] < s:
+            k += 1
+        seg = (acc[k+1] - acc[k]) or 1.0
+        t = min(max((s - acc[k]) / seg, 0.0), 1.0)
+        out.append(tuple(pts[k][c] + (pts[k+1][c] - pts[k][c]) * t for c in range(3)))
+    return out
+
+def fair_on_mesh(mesh, pts, iters=12):
+    """Smooth the polyline (ends fixed) and press it back onto the mesh each pass: follows the part's shape,
+    not the scan noise. ponytail: small-step Laplacian, may round a crisp edge the line crosses by ~2 samples."""
+    L = sum(norm(sub(pts[i+1], pts[i])) for i in range(len(pts)-1))
+    n = max(8, min(60, int(L / 0.02)))  # ~0.2 mm samples, 8..60 per line
+    p = resample(pts, n)
+    for _ in range(iters):
+        p = [p[0]] + [mesh.closest(tuple(0.5*p[i][c] + 0.25*(p[i-1][c] + p[i+1][c]) for c in range(3)))[0]
+                      for i in range(1, n)] + [p[-1]]
+    return p
+
 def snap_curve(mesh, p0, p1, n=8):
-    """n+1 points from p0 to p1 pulled onto the mesh (iterated so the curve hugs the surface)."""
-    pts = [p0]
-    for i in range(1, n):
-        t = i/n
-        q = (p0[0]+(p1[0]-p0[0])*t, p0[1]+(p1[1]-p0[1])*t, p0[2]+(p1[2]-p0[2])*t)
-        for _ in range(2):
-            q = mesh.closest(q)[0]
-        pts.append(q)
-    return pts + [p1]
+    """Smooth points from p0 to p1 lying on the mesh: the surface walk (else the chord pulled onto it), faired."""
+    path = surface_path(mesh, p0, p1)
+    if not path:
+        path = [p0]
+        for i in range(1, n):
+            t = i/n
+            q = (p0[0]+(p1[0]-p0[0])*t, p0[1]+(p1[1]-p0[1])*t, p0[2]+(p1[2]-p0[2])*t)
+            for _ in range(2):
+                q = mesh.closest(q)[0]
+            path.append(q)
+        path.append(p1)
+    if len(path) == 2:
+        return path
+    return simplify(fair_on_mesh(mesh, path), 0.005)
+
+def chains(edges):
+    """Split the line graph into runs through degree-2 nodes: [[a, b, c, ...], ...]; closed run ends where it starts."""
+    adj = {}
+    for a, b in edges:
+        adj.setdefault(a, []).append(b); adj.setdefault(b, []).append(a)
+    used, out = set(), []
+    key = lambda a, b: (min(a, b), max(a, b))
+    def walk(a, b):
+        run = [a, b]; used.add(key(a, b))
+        while len(adj[b]) == 2 and b != run[0]:
+            c = next((x for x in adj[b] if key(b, x) not in used), None)
+            if c is None:
+                break
+            used.add(key(b, c)); run.append(c); b = c
+        return run
+    for a in adj:  # open runs start at ends/junctions
+        if len(adj[a]) != 2:
+            for b in adj[a]:
+                if key(a, b) not in used:
+                    out.append(walk(a, b))
+    for a, b in edges:  # what's left are closed loops
+        if key(a, b) not in used:
+            out.append(walk(a, b))
+    return out
 
 def smooth_grow(mesh, seeds, max_angle, limit=None):
     """Flood fill across edges whose dihedral is below max_angle (radians)."""
@@ -173,25 +285,46 @@ def model_grow(mesh, seeds, model, dist_tol, ang_tol):
                 seen.add(n); q.append(n)
     return seen
 
-def detect(mesh, seeds, kind='auto', dist_tol=0.005, smooth_angle=math.radians(25), iters=3):
-    """seeds: triangle indices. Returns (model, triangle set). dist_tol in mesh units (cm in Fusion)."""
+def robust_fit(kind, v, fp, fn, dist_tol):
+    """Fit, then refit on inliers only (|dist| <= max(tol, 2.5 robust sigma)), so a few scan spikes can't tilt the model."""
+    model = fit(kind, v, fp, fn)
+    for _ in range(2):
+        if model is None or len(v) < 8:
+            return model
+        d = sorted(abs(model.dist(p)) for p in v)
+        cut = max(dist_tol, 2.5*1.4826*d[len(d)//2])
+        keep = [p for p in v if abs(model.dist(p)) <= cut]
+        if len(keep) == len(v) or len(keep) < 6:
+            return model
+        kf = [i for i, p in enumerate(fp) if abs(model.dist(p)) <= cut]
+        m2 = fit(model.kind, keep, [fp[i] for i in kf], [fn[i] for i in kf])
+        if m2 is None:
+            return model
+        model, v = m2, keep
+    return model
+
+def detect(mesh, seeds, kind='auto', dist_tol=0.005, smooth_angle=math.radians(25), iters=3, strict=False):
+    """seeds: triangle indices. Returns (model, triangle set). dist_tol in mesh units (cm in Fusion).
+    strict: return (None, region) when the best shape still misses the scan by more than the tolerance."""
     region = smooth_grow(mesh, seeds, smooth_angle)
     model = None
     for _ in range(iters):
         v, fp, fn = mesh.region_data(list(region))
         if len(fn) < 2 and kind != 'plane':
             v, fp, fn = mesh.region_data(list(smooth_grow(mesh, seeds, math.pi/2, limit=50)))
-        model = fit(kind, v, fp, fn)
+        model = robust_fit(kind, v, fp, fn, dist_tol)
         if model is None:
             return None, region
-        tol = max(dist_tol, 3*model.rms)
+        tol = min(max(dist_tol, 3*model.rms), 3*dist_tol)  # noise may widen the band, but never past 3x what the user asked
         grown = model_grow(mesh, seeds, model, tol, math.radians(20))
         if grown == region:
             break
         region = grown | set(seeds)
     v, fp, fn = mesh.region_data(list(region))
-    m2 = fit(model.kind, v, fp, fn)  # final fit on the final region, same type
-    return (m2 or model), region
+    m2 = robust_fit(model.kind, v, fp, fn, dist_tol) or model  # final fit on the final region, same type
+    if strict and (m2.rms > 3*dist_tol or len(region) < 2):
+        return None, region
+    return m2, region
 
 def boundary_loops(mesh, tris):
     """Closed vertex-index loops along the region border (edges used by one region triangle)."""

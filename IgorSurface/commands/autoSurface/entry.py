@@ -58,7 +58,7 @@ def pick(args):
         _state['faces'].remove(hit)
         status('Face tirada.')
     else:
-        model, tris = region.detect(mesh, [seed], 'auto', dist_tol=_state['inputs'].itemById('tol').value)
+        model, tris = region.detect(mesh, [seed], 'auto', dist_tol=_state['inputs'].itemById('tol').value, strict=True)
         if model is None:
             status('Não reconheci uma forma aqui. Tente outro ponto ou aumente a Tol.')
         else:
@@ -114,6 +114,13 @@ def run(args):
     body = _state['body']
     if not body or not _state['faces']:
         return
+    failed = sketch_faces(body, _state['faces'])
+    if failed:
+        ui.ui.messageBox('Algumas faces não viraram esboço:\n' + '\n'.join(failed), 'CriarAuto Superfície')
+
+
+def sketch_faces(body, faces):
+    """Sketches for [(model, tris)] in the IgorSurface group of the body's component. Returns failure texts."""
     mesh = mesh_of(body)
     comp = body.parentComponent
     grp = next((o.component for o in comp.occurrences if o.component.name == 'IgorSurface'), None)
@@ -121,7 +128,7 @@ def run(args):
         grp = comp.occurrences.addNewComponent(adsk.core.Matrix3D.create()).component
         grp.name = 'IgorSurface'
     failed = []
-    for model, tris in _state['faces']:
+    for model, tris in faces:
         tris = list(tris)
         verts, _, _ = mesh.region_data(tris)
         loops = [[mesh.v[i] for i in lp] for lp in region.boundary_loops(mesh, tris)] if model.kind == 'plane' else None
@@ -130,5 +137,4 @@ def run(args):
             build.build(grp, model, verts, '%s %d' % (NAMES[model.kind], n), 'sketch', loops)
         except Exception as exc:
             failed.append('%s: %s' % (NAMES[model.kind], exc))
-    if failed:
-        ui.ui.messageBox('Algumas faces não viraram esboço:\n' + '\n'.join(failed), 'CriarAuto Superfície')
+    return failed

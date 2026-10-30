@@ -5,11 +5,19 @@ While working everything is light custom graphics; the real sketch is built only
 import os, time
 import adsk.core, adsk.fusion
 from ...lib import ui, region
-from ..fitSurface.entry import mesh_of, to_component, reset_cache_check
+from ..fitSurface.entry import mesh_of, to_component, reset_cache_check, NAMES
+from ..autoSurface.entry import sketch_faces, COLORS
 
 CMD_ID = 'IgorSurface_quadPatch'
 ORANGE, BLUE = (243, 156, 18), (47, 143, 216)
-MODES = ('Pontos', 'Linhas', 'Pausa')
+MODES = ('Pontos', 'Linhas', 'Curva', 'Superfície', 'Pausa')
+LINE_MODES = ('Linhas', 'Curva')
+MODE_TIPS = {'Pontos': 'Clique cria, clique no ponto apaga, arraste move.',
+             'Linhas': 'Clique ponto após ponto. Mesmo ponto 2x encerra.',
+             'Curva': 'Como Linhas, mas a linha anda lisa por cima da peça (vira spline).',
+             'Superfície': 'Clique numa face da peça: vira esboço.',
+             'Pausa': 'Cliques não fazem nada.'}
+MODE_ICON = {'Pontos': 'mode_points', 'Linhas': 'mode_lines', 'Curva': 'mode_curve', 'Superfície': 'mode_surface', 'Pausa': 'mode_pause'}
 IMG = {k: os.path.join(ui.RES, k + '.png') for k in ('point', 'point_active', 'point_ghost', 'point_ghost_snap')}
 _state = {}
 
@@ -52,25 +60,34 @@ def faces_from_edges(edges):
 def created(args):
     cmd = args.command
     inputs = cmd.commandInputs
-    rg = inputs.addRadioButtonGroupCommandInput('mode', 'Modo')
-    for i, m in enumerate(MODES):
-        rg.listItems.add(m, i == 0)
-    rg.tooltip = 'Pontos: clique cria, clique num ponto apaga, arraste move. Linhas: clique ponto após ponto; clique fora de um ponto encerra. ' \
-                 'Pausa: clique não faz nada. Tab troca o modo.'
+    # mode picker: a gridded table, icon toggle on top and its name below, one boxed column per mode
+    # (a button row can't show text under the icons)
+    tb = inputs.addTableCommandInput('modes', '', len(MODES), ':'.join('1' * len(MODES)))
+    tb.hasGrid = True
+    tb.minimumVisibleRows = tb.maximumVisibleRows = 1
+    tb.isFullWidth = True
+    for c, m in enumerate(MODES):
+        b = tb.commandInputs.addBoolValueInput('mode_%d' % c, m, True, os.path.join(ui.RES, MODE_ICON[m]), c == 0)
+        b.tooltip = MODE_TIPS[m]
+        tb.addCommandInput(b, 0, c)
+    # names under the icons: one rich-text table with the same equal columns (text inside Fusion table cells gets cut)
+    inputs.addTextBoxCommandInput('modenames', '', mode_names(MODES[0]), 1, True).isFullWidth = True
+    inputs.addTextBoxCommandInput('modename', '', mode_label(MODES[0]), 1, True).isFullWidth = True
     def opt(id_, label, tip, value=True):  # dialog is narrow: short label, explanation in the tooltip
         i = inputs.addBoolValueInput(id_, label, True, '', value)
         i.tooltip = tip
     opt('snapmesh', 'Snap malha', 'Grudar nos pontos e linhas que você criou.')
     opt('snappart', 'Snap peça', 'Grudar nos cantos e quinas do STL. Desligue em scan com muito ruído.')
-    s = inputs.addIntegerSliderCommandInput('snappx', 'Raio (px)', 4, 40)
+    s = inputs.addIntegerSliderCommandInput('snappx', 'Alcance (px)', 4, 40)
     s.valueOne = 12
     s.tooltip = 'Distância em pixels de tela para grudar e para pegar um ponto.'
     u = inputs.addBoolValueInput('undo', 'Desfazer', False, '', False)
     u.tooltip = 'Desfaz o último ponto, linha ou movimento.'
-    inputs.addTextBoxCommandInput('info', 'Status', 'Modo Pontos: clique na peça.', 2, True)
+    info = inputs.addTextBoxCommandInput('info', '', 'Modo Pontos: clique na peça.', 4, True)
+    info.isFullWidth = True  # the label column cut the text off
     _state.clear()
     # pts: node coordinates; nodes: live node ids; edges: [(a, b)]; history: undo stack
-    _state.update(pts=[], nodes=[], edges=[], history=[], body=None, cg=None, gg=None, gimg=None, ghost=None,
+    _state.update(surf=[], pts=[], nodes=[], edges=[], history=[], body=None, cg=None, gg=None, gimg=None, ghost=None,
                   grab=None, hover=None, chain=None, cmd=cmd, inputs=inputs, mesh_comps=None,
                   last_move=(0.0, None), screen=(None, {}), index=None)
     ui.purge_graphics()
@@ -105,14 +122,42 @@ def preview(args):
         b.opacity = 0.45  # rolled back with the preview too
     redraw()  # old groups, if the rollback left them, are deleted inside draw()
 
+def is_curved(a, b):
+    return frozenset((a, b)) in _state.setdefault('curved', set())
+
+def curve(a, b):
+    """Points from node a to b pulled onto the scan; cached per end positions (nodes move -> new key)."""
+    P = _state['pts']
+    k = (P[a], P[b])
+    cache = _state.setdefault('curves', {})
+    if k not in cache:
+        if len(cache) > 5000:
+            cache.clear()
+        cache[k] = region.snap_curve(mesh_of(_state['body']), P[a], P[b], 8)
+    return cache[k]
+
 def mode():
-    return _state['inputs'].itemById('mode').selectedItem.name
+    return _state.get('mode', MODES[0])
+
+def mode_names(active):
+    cell = lambda m: '<td align="center" width="%d%%">%s</td>' % (100 // len(MODES), ('<b>%s</b>' if m == active else '%s') % m)
+    return '<table width="100%%"><tr>%s</tr></table>' % ''.join(cell(m) for m in MODES)
+
+def mode_label(m):
+    return '<b>%s</b> — %s' % (m, MODE_TIPS[m])
+
+def set_mode(m):
+    """Exactly one mode toggle pressed."""
+    _state['mode'] = m
+    _state['inputs'].itemById('modename').text = mode_label(m)
+    _state['inputs'].itemById('modenames').text = mode_names(m)
+    for c, name in enumerate(MODES):
+        _state['inputs'].itemById('mode_%d' % c).value = name == m
+    mode_changed()
 
 def key(args):
     if args.keyCode == adsk.core.KeyCodes.TabKeyCode:
-        items = _state['inputs'].itemById('mode').listItems
-        items.item((MODES.index(mode()) + 1) % len(MODES)).isSelected = True
-        mode_changed()
+        set_mode(MODES[(MODES.index(mode()) + 1) % len(MODES)])
 
 def mode_changed():
     _state['chain'] = None
@@ -127,7 +172,7 @@ def restore_opacity():
 def use_body(body):
     if _state['body'] != body:  # see-through mesh while working, restored on close
         if _state['body']:
-            _state.update(pts=[], nodes=[], edges=[], history=[], chain=None)
+            _state.update(surf=[], pts=[], nodes=[], edges=[], history=[], chain=None)
         restore_opacity()
         _state['opacity'] = (body, body.opacity)
         body.opacity = 0.45
@@ -146,6 +191,8 @@ def add_edge(a, b):
     if a == b or any({a, b} == set(e) for e in _state['edges']):
         return False
     _state['edges'].append((a, b))
+    if mode() == 'Curva':
+        _state.setdefault('curved', set()).add(frozenset((a, b)))
     _state['history'].append(('edge', (a, b)))
     return True
 
@@ -153,13 +200,19 @@ def click(args):
     m = mode()
     if m == 'Pausa':
         return
+    if m == 'Superfície':
+        pick_surface(args)
+        return
     update_ghost(args)
     g = _state['ghost']
-    if m == 'Linhas':
+    if m in LINE_MODES:
         n = g[3] if g else None
         if n is None:
             _state['chain'] = None  # clicked off a node: the chain ends
             status('Sequência encerrada. Clique num ponto para começar outra.')
+        elif n == _state['chain']:  # same node twice: end here, next click starts a new line
+            _state['chain'] = None
+            status('Sequência encerrada. Clique num ponto para recomeçar.')
         else:
             if _state['chain'] is not None:
                 add_edge(_state['chain'], n)
@@ -184,6 +237,36 @@ def click(args):
         return
     add_node(p)
     status(snapped=snapped)
+    redraw()
+
+def pick_surface(args):
+    """Superfície: the clicked face of the mesh is recognized (plane, cylinder...) and shown; again = drop it.
+    Meant for clean, homogeneous parts."""
+    h = ray_hit(args)
+    if not h:
+        return
+    body, p = h
+    use_body(body)
+    mesh = mesh_of(body)
+    seed = mesh.nearest_tri(p)
+    hit = next((f for f in _state['surf'] if seed in f[1]), None)
+    if hit:
+        _state['surf'].remove(hit)
+        status('Face tirada.')
+    else:
+        model, tris = region.detect(mesh, [seed], 'auto', dist_tol=0.005, strict=True)
+        if model is None:
+            status('Não reconheci uma forma aqui. Use Pontos e Linhas nessa área.')
+            return
+        coords = []
+        for t in tris:  # lifted 0.02 mm over the mesh so it shows on top
+            n = mesh.nrm[t]
+            for vi in mesh.t[t]:
+                q = mesh.v[vi]
+                coords += [q[0] + n[0]*0.002, q[1] + n[1]*0.002, q[2] + n[2]*0.002]
+        _state['surf'].append((model, set(tris), coords))
+        _state['history'].append(('surf', _state['surf'][-1]))
+        status('%s reconhecido (RMS %.3f mm).' % (NAMES[model.kind], model.rms*10))
     redraw()
 
 def ray_hit(args):
@@ -216,7 +299,7 @@ def update_ghost(args, skip=None):
     node = corner_at(args, skip)
     if node is not None:
         _state['ghost'] = (_state['body'], _state['pts'][node], True, node)
-    elif mode() == 'Linhas':
+    elif mode() in LINE_MODES:
         _state['ghost'] = None  # lines only connect existing nodes
     else:
         h = ray_hit(args)
@@ -237,7 +320,7 @@ def clear_ghost():
 def draw_ghost():
     """One small graphics group: the ghost dot, plus the rubber line from the chain start in Linhas mode."""
     g = _state['ghost']
-    chain = _state['chain'] if mode() == 'Linhas' else None
+    chain = _state['chain'] if mode() in LINE_MODES else None
     if not g and chain is None:
         clear_ghost(); adsk.core.Application.get().activeViewport.refresh()
         return
@@ -296,9 +379,9 @@ def snap(body, p, tol, skip=None):
 def tol_at(args, p):
     """Snap radius in model units: the slider's pixels measured at p's depth (same feel at any zoom)."""
     vp = args.viewport
-    a = vp.modelToViewSpace(adsk.core.Point3D.create(*p))
+    a = vp.modelToViewSpace(world(p))
     up = vp.camera.upVector.copy(); up.normalize(); up.scaleBy(0.1)  # 1 mm along screen-up
-    q = adsk.core.Point3D.create(*p); q.translateBy(up)
+    q = world(p); q.translateBy(up)
     b = vp.modelToViewSpace(q)
     px_per_unit = max(((a.x-b.x)**2 + (a.y-b.y)**2) ** 0.5 / 0.1, 1e-9)
     return _state['inputs'].itemById('snappx').valueOne / px_per_unit
@@ -312,8 +395,8 @@ def status(msg=None, snapped=False):
     _state['inputs'].itemById('info').text = msg
 
 def changed(args):
-    if args.input.id == 'mode':
-        mode_changed()
+    if args.input.id.startswith('mode_'):
+        set_mode(MODES[int(args.input.id[5:])])  # pressing the active one again keeps it on
         return
     if args.input.id != 'undo':
         return
@@ -329,6 +412,9 @@ def changed(args):
         _state['edges'].remove(data)
     elif kind == 'move':
         _state['pts'][data] = rest[0]
+    elif kind == 'surf':
+        if data in _state['surf']:
+            _state['surf'].remove(data)
     elif kind == 'del':
         _state['nodes'].append(data)
         _state['edges'] += rest[0]
@@ -350,14 +436,27 @@ def draw(comp, refresh=True):
     old = _state.get('cg')  # deleted only after the new group exists: delete-then-add made nodes blink
     g = comp.customGraphicsGroups.add()
     g.id = ui.CG_ID
+    for k, (_, _, sc) in enumerate(_state['surf']):
+        sm = g.addMesh(adsk.fusion.CustomGraphicsCoordinates.create(sc), list(range(len(sc) // 3)), [], [])
+        sm.color = color(COLORS[k % len(COLORS)], 200); sm.depthPriority = 1
     P = _state['pts']
-    coords = adsk.fusion.CustomGraphicsCoordinates.create([x for p in P for x in p])
+    # no points yet (only Superfície faces): Fusion rejects empty coordinates; nothing below uses them then
+    coords = adsk.fusion.CustomGraphicsCoordinates.create([x for p in P for x in p]) if P else None
     tris = [i for f in faces_from_edges(_state['edges']) for i in ([f[0], f[1], f[2]] + ([f[0], f[2], f[3]] if len(f) == 4 else []))]
     if tris:
         fm = g.addMesh(coords, tris, [], [])
         fm.color = color(BLUE, 90); fm.depthPriority = 1
-    if _state['edges']:
-        ln = g.addLines(coords, [i for e in _state['edges'] for i in e], False)
+    straight = [e for e in _state['edges'] if not is_curved(*e)]
+    segs = []
+    for a, b in _state['edges']:
+        if is_curved(a, b):
+            c = curve(a, b)
+            segs += [x for k in range(len(c) - 1) for x in c[k] + c[k+1]]
+    if segs:
+        ln = g.addLines(adsk.fusion.CustomGraphicsCoordinates.create(segs), list(range(len(segs) // 3)), False)
+        ln.weight = 2; ln.color = color(BLUE); ln.depthPriority = 2
+    if straight:
+        ln = g.addLines(coords, [i for e in straight for i in e], False)
         ln.weight = 2; ln.color = color(BLUE); ln.depthPriority = 2
     active = {i for i in (_state['grab'], _state['hover'], _state['chain']) if i is not None}
     for img, idx in ((IMG['point'], [i for i in _state['nodes'] if i not in active]),
@@ -371,6 +470,17 @@ def draw(comp, refresh=True):
     if refresh:
         adsk.core.Application.get().activeViewport.refresh()
 
+def world(p):
+    """Component-space point -> world Point3D (the mesh may sit inside a moved component occurrence)."""
+    q = adsk.core.Point3D.create(*p)
+    comp = _state['body'].parentComponent if _state['body'] else None
+    d = adsk.fusion.Design.cast(adsk.core.Application.get().activeProduct)
+    if comp and d and comp != d.rootComponent:
+        occ = d.rootComponent.allOccurrencesByComponent(comp)
+        if occ.count:
+            q.transformBy(occ.item(0).transform2)
+    return q
+
 def screen_pos(vp):
     """Node positions on screen, cached until the camera or the nodes change (one API call per node, not per move)."""
     cam = vp.camera
@@ -379,7 +489,7 @@ def screen_pos(vp):
     if _state['screen'][0] != key:
         sp = {}
         for i in _state['nodes']:
-            v = vp.modelToViewSpace(adsk.core.Point3D.create(*_state['pts'][i]))
+            v = vp.modelToViewSpace(world(_state['pts'][i]))
             sp[i] = (v.x, v.y)
         _state['screen'] = (key, sp)
     return _state['screen'][1]
@@ -424,6 +534,14 @@ def hover(args):
     update_ghost(args)  # one viewport refresh for both groups
 
 def drag_begin(args):
+    """A click with a 1-2 px wobble arrives as a drag: in Linhas it is just the click; in Pontos a grab
+    that ends where it started (see drag_end) counts as a click too."""
+    p = args.viewportPosition
+    _state['drag_from'] = (p.x, p.y)
+    if mode() in LINE_MODES:
+        _state['grab'] = None
+        click(args)
+        return
     _state['grab'] = corner_at(args) if mode() == 'Pontos' else None
 
 def drag(args):
@@ -445,17 +563,31 @@ def drag(args):
         draw(_state['body'].parentComponent)
 
 def drag_end(args):
-    if _state['grab'] is not None:
+    i = _state['grab']
+    if i is not None:
         _state['grab'] = None
+        p, (x, y) = args.viewportPosition, _state.get('drag_from', (0, 0))
+        if abs(p.x - x) + abs(p.y - y) <= 6:  # wobble, not a move: undo it and treat as a click (deletes the node)
+            h = _state['history']
+            if h and h[-1][:2] == ('move', i):
+                _state['pts'][i] = h.pop()[2]
+            click(args)
+            return
         status()
         redraw()
 
 def build(inputs):
     """OK: the real sketch (all lines) inside the 'IgorSurface' group."""
     body = _state['body']
-    if not body or not _state['edges']:
+    if not body:
         return
     restore_opacity()
+    if _state['surf']:
+        failed = sketch_faces(body, [(m, t) for m, t, _ in _state['surf']])
+        if failed:
+            ui.ui.messageBox('Algumas faces não viraram esboço:\n' + '\n'.join(failed), 'Malha Manual')
+    if not _state['edges']:
+        return
     comp = body.parentComponent
     pts, edges = _state['pts'], _state['edges']
     grp = next((o.component for o in comp.occurrences if o.component.name == 'IgorSurface'), None)
@@ -467,6 +599,21 @@ def build(inputs):
     sk.isComputeDeferred = True
     used = {i for e in edges for i in e}
     node = {i: sk.sketchPoints.add(sk.modelToSketchSpace(adsk.core.Point3D.create(*pts[i]))) for i in used}
+    curved = [e for e in edges if is_curved(*e)]
     for a, b in edges:
-        sk.sketchCurves.sketchLines.addByTwoPoints(node[a], node[b])
+        if not is_curved(a, b):
+            sk.sketchCurves.sketchLines.addByTwoPoints(node[a], node[b])
+    if curved:  # one smooth spline per run of Curva lines (through every node of it), hugging the scan
+        for run in region.chains(curved):
+            closed = run[0] == run[-1]
+            fit = adsk.core.ObjectCollection.create()
+            for k in range(len(run) - 1):
+                fit.add(node[run[k]])
+                for q in curve(run[k], run[k+1])[1:-1]:
+                    fit.add(sk.modelToSketchSpace(adsk.core.Point3D.create(*q)))
+            if not closed:
+                fit.add(node[run[-1]])
+            sp = sk.sketchCurves.sketchFittedSplines.add(fit)
+            if closed:
+                sp.isClosed = True
     sk.isComputeDeferred = False  # sketch only: lighter than patches (Igor, 2026-10-29)

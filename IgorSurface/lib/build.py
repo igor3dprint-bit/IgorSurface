@@ -186,27 +186,33 @@ def _cone(comp, m, verts, name, surface):
     _revolve(comp, sk, g, axl, sweep, name)
     return 'cone %.2f° (meio-ângulo)' % math.degrees(m.ang)
 
+def section_segs(mesh, o, n):
+    """3D segments where the plane (point o, normal n) cuts the mesh. ponytail: scans every triangle,
+    ~0.5 s on 300k in pure Python; add a slab index if the live preview feels slow."""
+    segs = []
+    for a, b, c in mesh.t:
+        tri = (mesh.v[a], mesh.v[b], mesh.v[c])
+        d = [dot(sub(p, o), n) for p in tri]
+        cut = []
+        for i in range(3):
+            j = (i+1) % 3
+            if (d[i] > 0) != (d[j] > 0):
+                cut.append(add(tri[i], mul(sub(tri[j], tri[i]), d[i]/(d[i]-d[j]))))
+        if len(cut) == 2 and dot(sub(cut[0], cut[1]), sub(cut[0], cut[1])) > 1e-12:
+            segs.append((cut[0], cut[1]))
+    return segs
+
 def section(comp, plane_model, mesh, offset, name, tol=None):
     """Sketch on the fitted plane with the mesh cross-section at `offset` along the plane normal.
     tol (cm): fit clean lines/arcs/circles within it; None = raw segments. Returns the curve count."""
     from . import curve2d
     u, v = perp_basis(plane_model.n)
     o = add(plane_model.origin, mul(plane_model.n, offset))
+    segs = [tuple((dot(sub(q, o), u), dot(sub(q, o), v)) for q in s) for s in section_segs(mesh, o, plane_model.n)]
+    if not segs:
+        return 0
     pl, _, _ = _ref_plane(comp, o, u, v, name)
     sk = comp.sketches.add(pl); sk.name = name
-    segs = []
-    for a, b, c in mesh.t:
-        d = [dot(sub(mesh.v[i], o), plane_model.n) for i in (a, b, c)]
-        tri = (mesh.v[a], mesh.v[b], mesh.v[c])
-        cut = []
-        for i in range(3):
-            j = (i+1) % 3
-            if (d[i] > 0) != (d[j] > 0):
-                t = d[i]/(d[i]-d[j])
-                q = sub(add(tri[i], mul(sub(tri[j], tri[i]), t)), o)
-                cut.append((dot(q, u), dot(q, v)))
-        if len(cut) == 2 and (cut[0][0]-cut[1][0])**2 + (cut[0][1]-cut[1][1])**2 > 1e-12:
-            segs.append((cut[0], cut[1]))
     to_sk = lambda q: sk.modelToSketchSpace(P3(add(o, add(mul(u, q[0]), mul(v, q[1])))))
     sk.isComputeDeferred = True
     n = _curves(sk, curve2d.chain(segs), tol, to_sk)
